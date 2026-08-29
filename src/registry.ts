@@ -204,19 +204,27 @@ function mergeRegistries(registries: readonly Registry[]): Registry {
   const categories: Registry['categories'] = {}
   const plugins: RegistryPlugin[] = []
   const indexByIdentity = new Map<string, number>()
-  const identityByName = new Map<string, string>()
+  const identityByName = new Map<string, string | null>()
   let updated = ''
 
   for (const registry of registries) {
     Object.assign(categories, registry.categories)
     if (registry.updated > updated) updated = registry.updated
+    // Existing catalogs contain a few historical same-name entries. Preserve
+    // those within their source; only a LATER catalog redirecting a name is a
+    // cross-catalog conflict.
+    const priorIdentityByName = new Map(identityByName)
     for (const plugin of registry.plugins) {
       const identity = pluginIdentity(plugin)
-      const namedIdentity = identityByName.get(plugin.name)
-      if (namedIdentity !== undefined && namedIdentity !== identity) {
+      const namedIdentity = priorIdentityByName.get(plugin.name)
+      if (priorIdentityByName.has(plugin.name) && namedIdentity !== identity) {
         throw new Error(`catalog conflict: plugin name ${JSON.stringify(plugin.name)} points at more than one repository`)
       }
-      identityByName.set(plugin.name, identity)
+      const currentIdentity = identityByName.get(plugin.name)
+      identityByName.set(
+        plugin.name,
+        !identityByName.has(plugin.name) || currentIdentity === identity ? identity : null,
+      )
       const existing = indexByIdentity.get(identity)
       if (existing === undefined) {
         indexByIdentity.set(identity, plugins.length)

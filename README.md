@@ -97,6 +97,19 @@ There is deliberately no bundled snapshot to fall back on: for a catalog that gr
 DSHM_REGISTRY_URL=https://your-mirror.example/plugins.json dsh web
 ```
 
+To keep the official catalog and add required organization catalogs, configure
+the market bundle instead. Catalogs are merged by repository URL; later entries
+may replace metadata for the same repository, while duplicate names pointing to
+different repositories are rejected:
+
+```yaml
+- id: dsh-market
+  name: dshmarket
+  config:
+    additionalRegistryUrls:
+      - https://raw.githubusercontent.com/your-org/dsh-plugin-catalog/main/plugins.json
+```
+
 ## Friends
 
 ### DSH Desktop (dataelement)

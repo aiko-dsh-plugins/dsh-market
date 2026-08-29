@@ -94,6 +94,17 @@ dsh plugin --profile web add dshmarket
 DSHM_REGISTRY_URL=https://your-mirror.example/plugins.json dsh web
 ```
 
+如果希望保留官方目录，同时加载组织自己的必需目录，请配置市场 Bundle。
+目录按仓库 URL 合并；后加载的目录可以更新同一仓库的展示信息，但同名插件不能指向不同仓库：
+
+```yaml
+- id: dsh-market
+  name: dshmarket
+  config:
+    additionalRegistryUrls:
+      - https://raw.githubusercontent.com/your-org/dsh-plugin-catalog/main/plugins.json
+```
+
 ## 友情链接
 
 ### DSH Desktop（dataelement）

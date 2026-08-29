@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
+import { forgetCatalog, loadRegistry, pluginCategories, setAdditionalRegistryUrls } from './registry.ts'
 import {
   cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_NOTE,
   mountClientOnlyDeps, purgeMarketState, readMarketState, writeMarketState,
@@ -91,6 +91,8 @@ export interface MarketConfig {
   region?: Region
   /** Snapshots retained per profile (issue #98); defaults to DEFAULT_MAX_SNAPSHOTS. */
   maxSnapshots?: number
+  /** Required catalogs merged after the official catalog, in declaration order. */
+  additionalRegistryUrls?: string[]
 }
 
 /**
@@ -198,6 +200,7 @@ export function mountMarketRoutes(
     throw new Error(message)
   }
   const activeProfileDir = profileDir(config.profile, config.profileDirectory)
+  setAdditionalRegistryUrls(config.additionalRegistryUrls)
   const persistentLogFile = join(activeProfileDir, '.dsh-market', 'log.ndjson')
   configurePersistentLog(persistentLogFile)
   let agentGuardUnavailableLogged = false

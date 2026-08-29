@@ -152,6 +152,32 @@ describe('loadRegistry', () => {
     await expect(loadRegistry()).rejects.toThrow(/points at more than one repository/)
   })
 
+  it('preserves historical same-name entries inside one source catalog', async () => {
+    const official = {
+      ...CATALOG,
+      count: 2,
+      plugins: [
+        CATALOG.plugins[0],
+        { ...CATALOG.plugins[0], url: 'https://github.com/legacy/second-repository' },
+      ],
+    }
+    const custom = {
+      ...CATALOG,
+      plugins: [{ ...CATALOG.plugins[0], name: 'aiko-only', url: 'https://github.com/aiko/only' }],
+    }
+    setAdditionalRegistryUrls(['https://catalog.aiko.test/plugins.json'])
+    vi.stubGlobal('fetch', vi.fn((url: unknown) => Promise.resolve(
+      String(url).includes('catalog.aiko.test') ? ok(custom) : ok(official),
+    )))
+
+    const registry = await loadRegistry()
+    expect(registry.plugins.map(plugin => plugin.url)).toEqual([
+      'https://example.com',
+      'https://github.com/legacy/second-repository',
+      'https://github.com/aiko/only',
+    ])
+  })
+
   it('reports an unavailable required additional catalog instead of hiding its plugins', async () => {
     setAdditionalRegistryUrls(['https://catalog.aiko.test/plugins.json'])
     vi.stubGlobal('fetch', vi.fn((url: unknown) => String(url).includes('catalog.aiko.test')

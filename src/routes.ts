@@ -2999,7 +2999,7 @@ export function mountMarketRoutes(
               const dependents = [...requiredBy]
               logEvent('warn', 'uninstall-blocked', `${name}: required by ${dependents.join(', ')}`)
               sendJson(response, 409, {
-                error: `无法卸载 ${name}：${dependents.join('、')} 仍依赖它。请先卸载这些场景插件。 / Cannot uninstall ${name}: it is still required by ${dependents.join(', ')}. Uninstall those scene plugins first.`,
+                error: `无法卸载 ${name}：${dependents.join('、')} 仍依赖它。请先卸载这些插件。 / Cannot uninstall ${name}: it is still required by ${dependents.join(', ')}. Uninstall those plugins first.`,
                 dependencyRequired: true,
                 dependents,
               })

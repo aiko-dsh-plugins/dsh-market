@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
+import { forgetCatalog, loadRegistry, pluginCategories, setAdditionalRegistryUrls } from './registry.ts'
 import {
   cleanHotDir, hotMount, hotUnmount, listHotMounts, MAX_NOTE,
   mountClientOnlyDeps, purgeMarketState, readMarketState, writeMarketState,
@@ -58,6 +58,7 @@ import {
   createGist, fitsGistLimit, GistError, gistErrorCode, parseGistId, readGist, resolveGistTokenSource, updateGist, verifyGistToken,
 } from './gist.ts'
 import { MAX_UPDATE_OPERATIONS_V1, UpdateOperationStoreV1, UPDATE_API_V1_SCHEMA } from './update-api-v1.ts'
+import { installedDependents, resolveInstallOrder } from './dependencies.ts'
 
 export type { LoaderEntry } from './themes.ts'
 export type { UpdateStatus } from './updates.ts'
@@ -91,6 +92,8 @@ export interface MarketConfig {
   region?: Region
   /** Snapshots retained per profile (issue #98); defaults to DEFAULT_MAX_SNAPSHOTS. */
   maxSnapshots?: number
+  /** Required catalogs merged after the official catalog, in declaration order. */
+  additionalRegistryUrls?: string[]
 }
 
 /**
@@ -155,6 +158,23 @@ function packageHasClientPart(profileDirectory: string, name: string): boolean {
   }
 }
 
+/** Direct profile plugins whose peer contract requires another direct plugin. */
+function peerDependents(profileDirectory: string, target: string, installed: Record<string, string>): string[] {
+  const dependents: string[] = []
+  for (const name of Object.keys(installed)) {
+    if (name === target) continue
+    try {
+      const manifest = JSON.parse(
+        readFileSync(join(profileDirectory, 'node_modules', name, 'package.json'), 'utf8'),
+      ) as { peerDependencies?: Record<string, string> }
+      if (manifest.peerDependencies?.[target] !== undefined) dependents.push(name)
+    } catch {
+      // A missing peer manifest is handled by the existing profile diagnostics.
+    }
+  }
+  return dependents
+}
+
 /**
  * Packages whose build scripts pnpm refused to run, from any of its three
  * reporting shapes: the structured ndjson event (pnpm 11), the human
@@ -198,6 +218,7 @@ export function mountMarketRoutes(
     throw new Error(message)
   }
   const activeProfileDir = profileDir(config.profile, config.profileDirectory)
+  setAdditionalRegistryUrls(config.additionalRegistryUrls)
   const persistentLogFile = join(activeProfileDir, '.dsh-market', 'log.ndjson')
   configurePersistentLog(persistentLogFile)
   let agentGuardUnavailableLogged = false
@@ -2937,8 +2958,35 @@ export function mountMarketRoutes(
               sendJson(response, 400, { error: 'the market cannot uninstall itself; use the dsh CLI' })
               return
             }
-            if (readInstalled(config.profile, activeProfileDir)[name] === undefined) {
+            const installedSnapshot = readInstalled(config.profile, activeProfileDir)
+            if (installedSnapshot[name] === undefined) {
               sendJson(response, 400, { error: 'plugin is not installed' })
+              return
+            }
+            const requiredBy = new Set(peerDependents(activeProfileDir, name, installedSnapshot))
+            try {
+              const registry = await loadRegistry()
+              const targetEntry = registry.plugins.find(plugin => findInstalledAlias(plugin, installedSnapshot) === name)
+              if (targetEntry !== undefined) {
+                for (const dependent of installedDependents(
+                  registry.plugins,
+                  targetEntry,
+                  plugin => findInstalledAlias(plugin, installedSnapshot) !== null,
+                )) {
+                  requiredBy.add(findInstalledAlias(dependent, installedSnapshot) ?? dependent.name)
+                }
+              }
+            } catch (error) {
+              logEvent('warn', 'uninstall-dependencies', `${name}: catalog dependency check unavailable: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            if (requiredBy.size > 0) {
+              const dependents = [...requiredBy]
+              logEvent('warn', 'uninstall-blocked', `${name}: required by ${dependents.join(', ')}`)
+              sendJson(response, 409, {
+                error: `无法卸载 ${name}：${dependents.join('、')} 仍依赖它。请先卸载这些场景插件。 / Cannot uninstall ${name}: it is still required by ${dependents.join(', ')}. Uninstall those scene plugins first.`,
+                dependencyRequired: true,
+                dependents,
+              })
               return
             }
             const userPatchReferences = userPatchPackageReferences(userPatchPath, name)
@@ -3180,6 +3228,7 @@ export function mountMarketRoutes(
               sendJson(response, 400, { error: 'plugin is not in the curated registry' })
               return
             }
+            const installOrder = resolveInstallOrder(registry.plugins, entry)
             const plainTarget = installTargetFor(entry)
             if (plainTarget === null) {
               sendJson(response, 400, { error: 'unsupported source url' })
@@ -3264,6 +3313,29 @@ export function mountMarketRoutes(
                 return
               }
             }
+            const dependencyTargets: string[] = []
+            const resolvedDependencies: string[] = []
+            for (const dependency of installOrder.slice(0, -1)) {
+              if (findInstalledAlias(dependency, installedNow) !== null) continue
+              const clashName = [dependency.npm, dependency.name].find(
+                (name): name is string => typeof name === 'string' && name !== '' && installedNow[name] !== undefined,
+              )
+              if (clashName !== undefined) {
+                sendJson(response, 400, {
+                  error: `依赖 ${dependency.name} 与已安装的 ${clashName} 同名但来源不同，无法安装 / dependency ${dependency.name} conflicts with installed package ${clashName} from another source`,
+                  dependencyConflict: true,
+                  dependency: dependency.name,
+                })
+                return
+              }
+              const dependencyTarget = installTargetFor(dependency)
+              if (dependencyTarget === null) {
+                sendJson(response, 400, { error: `unsupported dependency source: ${dependency.url}` })
+                return
+              }
+              dependencyTargets.push(await acceleratedTarget(dependencyTarget, region))
+              resolvedDependencies.push(dependency.name)
+            }
             const beforeSpecs = readInstalled(config.profile, activeProfileDir)
             const before = new Set(Object.keys(beforeSpecs))
             if (retryAlias !== null) before.delete(retryAlias)
@@ -3282,7 +3354,7 @@ export function mountMarketRoutes(
             // keep their partial state on purpose (the user sees the diff
             // and decides).
             const manifestBefore = readProfileManifestSnapshot(config.profile, activeProfileDir)
-            const result = await runPlugin(config.profile, ['add', target])
+            const result = await runPlugin(config.profile, ['add', ...dependencyTargets, target])
             const cancelled = result.cancelled
             if ((result.exitCode !== 0 || result.timedOut) && !cancelled) {
               const rolledBack = restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
@@ -3408,6 +3480,7 @@ export function mountMarketRoutes(
               partial: cancelDiff?.partial,
               changed: cancelDiff?.changed,
               activation,
+              resolvedDependencies: resolvedDependencies.length > 0 ? resolvedDependencies : undefined,
               compatibility,
               ignoredBuilds,
               // Named here rather than left for the next restart to find

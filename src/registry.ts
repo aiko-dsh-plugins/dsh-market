@@ -7,6 +7,7 @@
 import { configuredProxy, marketFetch } from './net.ts'
 import { catalogFromPackage } from './catalog-npm.ts'
 import { activeRegion, routesFor, type CatalogSource, type Region } from './regions.ts'
+import { resolveInstallOrder } from './dependencies.ts'
 
 export interface RegistryPlugin {
   name: string
@@ -34,6 +35,8 @@ export interface RegistryPlugin {
   deprecated?: boolean
   /** Catalog name of the suggested replacement plugin, when deprecated. */
   replacement?: string
+  /** Repository URLs of platform plugins that must activate before this entry. */
+  requires?: string[]
 }
 
 /**
@@ -137,7 +140,11 @@ function asRegistry(value: unknown): Registry {
   const plugins = data.plugins.map((plugin, index) => {
     const category = pluginCategories(plugin)
     if (category.length === 0) throw new Error(`catalog plugin ${String(index)} carries no usable category`)
-    return { ...plugin, category }
+    const requires = plugin.requires
+    if (requires !== undefined && (!Array.isArray(requires) || requires.some(url => typeof url !== 'string' || !/^https?:\/\//u.test(url)))) {
+      throw new Error(`catalog plugin ${String(index)} carries invalid requires URLs`)
+    }
+    return { ...plugin, category, ...(requires === undefined ? {} : { requires: [...new Set(requires)] }) }
   })
   return { ...data, plugins }
 }
@@ -310,7 +317,9 @@ export async function loadRegistry(region: Region = activeRegion()): Promise<Reg
     })),
   ]
   const registries = await Promise.all(groups.map(group => loadRegistryGroup(group.sources, group.label)))
-  return mergeRegistries(registries)
+  const registry = mergeRegistries(registries)
+  for (const plugin of registry.plugins) resolveInstallOrder(registry.plugins, plugin)
+  return registry
 }
 
 /**

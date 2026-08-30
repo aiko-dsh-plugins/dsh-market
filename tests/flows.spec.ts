@@ -186,6 +186,13 @@ vi.mock('../src/dsh-cli.ts', () => {
       fake.hoistDiffTimes--
       return { exitCode: 1, timedOut: false, stdout: '', stderr: 'ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF  Run "pnpm install" to recreate the modules directory.', cancelled: false }
     }
+    if (cmd === 'add' && positional.length > 2) {
+      for (const target of positional.slice(1)) {
+        const result = await execute(['add', target]) as { exitCode: number | null; timedOut: boolean }
+        if (result.exitCode !== 0 || result.timedOut) return result
+      }
+      return ok
+    }
     const target = positional[positional.length - 1]
     if (cmd === 'remove') {
       if (fake.failNextRemoveOnce !== '') {
@@ -2093,6 +2100,29 @@ describe('local-dev restore flow', () => {
 })
 
 describe('uninstall flow', () => {
+  it('installs catalog dependencies first and protects them while a scene is installed', async () => {
+    const kernel = { name: 'aiko-kernel', owner: 'aiko', url: 'https://github.com/aiko/kernel', category: 'tool', npm: 'aiko-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'aiko-bid', owner: 'aiko', url: 'https://github.com/aiko/bid', category: 'tool', npm: 'aiko-bid', description: {}, install: '', added: '', requires: [kernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    fake.npm['aiko-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
+    fake.npm['aiko-bid'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js', peerDependencies: { 'aiko-kernel': '^1.0.0' } }, artifacts: ['index.js'] } } }
+    try {
+      const installed = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+      expect(installed.status).toBe(200)
+      expect(installed.json.resolvedDependencies).toEqual(['aiko-kernel'])
+      expect(fake.calls).toContainEqual(['add', 'aiko-kernel', 'aiko-bid'])
+      expect(installedSpec('aiko-kernel')).toBeDefined()
+      expect(installedSpec('aiko-bid')).toBeDefined()
+      const protectedKernel = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'aiko-kernel' })
+      expect(protectedKernel.status).toBe(409)
+      expect(protectedKernel.json).toMatchObject({ dependencyRequired: true, dependents: ['aiko-bid'] })
+      expect((await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'aiko-bid' })).status).toBe(200)
+      expect((await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'aiko-kernel' })).status).toBe(200)
+    } finally {
+      registryModule.loadRegistry.mockImplementation(() => Promise.resolve(REGISTRY))
+    }
+  })
+
   it('removes the plugin (live when hot mounted) and protects the market itself', async () => {
     fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
     await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })

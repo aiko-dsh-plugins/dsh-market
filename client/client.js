@@ -7166,6 +7166,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							text: desc,
 							t
 						}),
+						p.requires !== void 0 && p.requires.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: Market_module_css_default.depLine,
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: lang === "zh" ? "依赖：" : "Requires: " }), p.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+								className: Market_module_css_default.src,
+								href: url,
+								target: "_blank",
+								rel: "noreferrer",
+								children: url.replace(/\/+$/u, "").split("/").pop()
+							}, url))]
+						}),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(CardShot, {
 							plugin: p,
 							onOpen: openLightbox
@@ -9079,6 +9089,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(CardDesc, {
 								text: confirming.description && (confirming.description[lang] || confirming.description.en) || "",
 								t
+							}),
+							confirming.requires !== void 0 && confirming.requires.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: Market_module_css_default.depLine,
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: lang === "zh" ? "将同时安装依赖：" : "Also installs: " }), confirming.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+									className: Market_module_css_default.src,
+									href: url,
+									target: "_blank",
+									rel: "noreferrer",
+									children: url.replace(/\/+$/u, "").split("/").pop()
+								}, url))]
 							}),
 							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ScreenshotStrip, {
 								plugin: confirming,

@@ -123,6 +123,25 @@ describe('loadRegistry', () => {
     expect(registry.plugins.map(plugin => plugin.name)).toEqual(['dsh-loop', 'aiko-dsh-bid-studio'])
   })
 
+  it('validates dependency references after all catalogs are merged', async () => {
+    const platform = { name: 'aiko-kernel', owner: 'aiko', url: 'https://github.com/aiko/kernel', category: 'tools', description: { en: 'Kernel.' }, install: '', added: '2026-08-30' }
+    const scene = { name: 'aiko-scene', owner: 'aiko', url: 'https://github.com/aiko/scene', category: 'workflow', description: { en: 'Scene.' }, install: '', added: '2026-08-30', requires: [platform.url] }
+    setAdditionalRegistryUrls(['https://catalog.aiko.test/plugins.json'])
+    vi.stubGlobal('fetch', vi.fn((url: unknown) => Promise.resolve(
+      String(url).includes('catalog.aiko.test')
+        ? ok({ updated: '2026-08-30', count: 2, categories: { workflow: { en: 'Workflow' } }, plugins: [platform, scene] })
+        : ok(CATALOG),
+    )))
+    const registry = await loadRegistry()
+    expect(registry.plugins.find(plugin => plugin.name === 'aiko-scene')?.requires).toEqual([platform.url])
+  })
+
+  it('rejects a dependency that is absent from the merged catalogs', async () => {
+    const broken = { ...CATALOG, plugins: [{ ...CATALOG.plugins[0], requires: ['https://github.com/missing/kernel'] }] }
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(ok(broken))))
+    await expect(loadRegistry()).rejects.toThrow(/requires missing entry/)
+  })
+
   it('lets an additional catalog replace metadata for the same repository', async () => {
     const custom = {
       ...CATALOG,

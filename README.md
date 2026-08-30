@@ -110,6 +110,8 @@ different repositories are rejected:
       - https://raw.githubusercontent.com/your-org/dsh-plugin-catalog/main/plugins.json
 ```
 
+Organization catalogs may declare `requires` as repository URLs of other catalog entries. The market installs those dependencies before the selected plugin, shows them on the plugin card, and prevents removal while an installed plugin still depends on them.
+
 ## Friends
 
 ### DSH Desktop (dataelement)

@@ -105,6 +105,8 @@ DSHM_REGISTRY_URL=https://your-mirror.example/plugins.json dsh web
       - https://raw.githubusercontent.com/your-org/dsh-plugin-catalog/main/plugins.json
 ```
 
+组织目录可以用 `requires` 声明其他目录条目的仓库 URL。市场会先安装这些依赖，在插件卡片中显示依赖关系，并在仍有已安装插件依赖时阻止卸载基础插件。
+
 ## 友情链接
 
 ### DSH Desktop（dataelement）

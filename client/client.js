@@ -92,6 +92,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			restartHintSupervised: "本进程是 {0} 服务的主进程，重启交给它负责——市场自己重启会连带杀掉 cgroup 里的接管进程，服务将起不来。请执行 systemctl restart <你的 unit>。确认你的配置能承受市场自行重启（如 KillMode=process），可在本插件配置里手动打开「允许重启」。",
 			confirmTitle: "安装",
 			confirmWarn: "插件是社区第三方代码。安装即表示你信任该来源；构建脚本默认被禁止执行。",
+			requiresLabel: "依赖：",
+			alsoInstallsLabel: "将同时安装依赖：",
 			cancel: "取消",
 			empty: "没有匹配的插件",
 			installedEmpty: "尚未安装社区插件，可前往「发现」页浏览",
@@ -561,6 +563,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			restartHintSupervised: "This process is {0}'s own service process, so restarts belong to it — restarting from here would kill the takeover process along with the cgroup and the service would not come back. Use systemctl restart &lt;your unit&gt;. If your unit can survive a self-restart (KillMode=process), turn Allow restart on in this plugin's configuration.",
 			confirmTitle: "Install",
 			confirmWarn: "Plugins are third-party community code. Installing means you trust this source; build scripts are blocked by default.",
+			requiresLabel: "Requires: ",
+			alsoInstallsLabel: "Also installs: ",
 			cancel: "Cancel",
 			empty: "No plugins match",
 			installedEmpty: "No community plugins yet — browse the Discover tab",
@@ -7168,7 +7172,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						}),
 						p.requires !== void 0 && p.requires.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: Market_module_css_default.depLine,
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: lang === "zh" ? "依赖：" : "Requires: " }), p.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("requiresLabel") }), p.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 								className: Market_module_css_default.src,
 								href: url,
 								target: "_blank",
@@ -9092,7 +9096,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							}),
 							confirming.requires !== void 0 && confirming.requires.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: Market_module_css_default.depLine,
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: lang === "zh" ? "将同时安装依赖：" : "Also installs: " }), confirming.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("alsoInstallsLabel") }), confirming.requires.map((url) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 									className: Market_module_css_default.src,
 									href: url,
 									target: "_blank",

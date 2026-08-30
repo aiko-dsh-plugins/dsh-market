@@ -1,14 +1,14 @@
 {
   "name": "dshmarket",
   "description": "Visual plugin market inside DeepSeek Harness — browse, search, and one-click install community plugins. · DSH 可视化插件市场：逛一逛，点一下，装好。",
-  "version": "1.37.0",
+  "version": "1.38.0",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aiko-dsh-plugins/dsh-market.git"
+    "url": "git+https://github.com/dsh-market/dsh-market.git"
   },
   "homepage": "https://dshmarket.com",
   "keywords": [

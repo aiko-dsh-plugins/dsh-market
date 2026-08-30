@@ -112,6 +112,8 @@ different repositories are rejected:
 
 Organization catalogs may declare `requires` as repository URLs of other catalog entries. The market installs those dependencies before the selected plugin, shows them on the plugin card, and prevents removal while an installed plugin still depends on them.
 
+Every additional catalog is an installation allowlist with the same authority as the official catalog. Whoever controls its URL can publish arbitrary plugin sources and use `requires` to add dependency chains, so configure only catalogs governed by the same administrator who controls the profile. Never populate `additionalRegistryUrls` from untrusted user input. Every configured catalog is required: an unreachable or invalid additional catalog fails the whole catalog load instead of silently hiding organization plugins.
+
 ## Friends
 
 ### DSH Desktop (dataelement)

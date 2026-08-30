@@ -2,6 +2,3 @@
 - insert:
     - id: dsh-market
       name: 'dshmarket'
-      config:
-        additionalRegistryUrls:
-          - https://raw.githubusercontent.com/aiko-dsh-plugins/dsh-plugin-catalog/main/plugins.json

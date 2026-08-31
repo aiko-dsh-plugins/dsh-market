@@ -166,8 +166,16 @@ function peerDependents(profileDirectory: string, target: string, installed: Rec
     try {
       const manifest = JSON.parse(
         readFileSync(join(profileDirectory, 'node_modules', name, 'package.json'), 'utf8'),
-      ) as { peerDependencies?: Record<string, string> }
-      if (manifest.peerDependencies?.[target] !== undefined) dependents.push(name)
+      ) as {
+        peerDependencies?: Record<string, string>
+        peerDependenciesMeta?: Record<string, { optional?: boolean }>
+      }
+      if (
+        manifest.peerDependencies?.[target] !== undefined
+        && manifest.peerDependenciesMeta?.[target]?.optional !== true
+      ) {
+        dependents.push(name)
+      }
     } catch {
       // A missing peer manifest is handled by the existing profile diagnostics.
     }
@@ -2965,10 +2973,10 @@ export function mountMarketRoutes(
           await withMutationLock(response, 'install', async () => {
             const body = (await readJsonBody(request)) as { name?: unknown; force?: unknown }
             const name = typeof body.name === 'string' ? body.name : ''
-            // Only the INDETERMINATE patch case is forceable, below. A patch
-            // that definitely names the package stays refused: there the user
-            // has a concrete thing to go fix, so an override would only help
-            // them break their next boot.
+            // Indeterminate dependency and user-patch inspections are
+            // forceable. A definite reference stays refused: there the user
+            // has a concrete thing to fix, so an override would only help them
+            // break their next boot.
             const force = body.force === true
             if (name === 'dsh-market' || name === 'dshmarket') {
               sendJson(response, 400, { error: 'the market cannot uninstall itself; use the dsh CLI' })
@@ -2993,7 +3001,17 @@ export function mountMarketRoutes(
                 }
               }
             } catch (error) {
-              logEvent('warn', 'uninstall-dependencies', `${name}: catalog dependency check unavailable: ${error instanceof Error ? error.message : String(error)}`)
+              const detail = error instanceof Error ? error.message : String(error)
+              if (!force) {
+                logEvent('warn', 'uninstall-blocked', `${name}: catalog dependency check unavailable: ${detail}`)
+                sendJson(response, 409, {
+                  error: `无法安全卸载 ${name}：插件目录当前不可用，因此无法排除其他已安装插件仍依赖它。目录恢复后请重试；确认无依赖后可强制卸载。 / Cannot safely uninstall ${name}: the plugin catalog is unavailable, so the market cannot rule out installed dependents. Retry when the catalog recovers; you can force the uninstall once you are sure no plugin depends on it.`,
+                  dependencyInspectionFailed: true,
+                  forceable: true,
+                })
+                return
+              }
+              logEvent('warn', 'uninstall-dependencies', `${name}: forced past unavailable catalog dependency check: ${detail}`)
             }
             if (requiredBy.size > 0) {
               const dependents = [...requiredBy]
@@ -3176,7 +3194,7 @@ export function mountMarketRoutes(
               ok = result.ok
               detail = result.detail
             } else {
-              for (const name of pending.names) {
+              for (const name of [...pending.names].reverse()) {
                 const result = await removeInstalledPackage(name)
                 hot ||= result.hot
                 if (!result.ok) {
@@ -3331,8 +3349,21 @@ export function mountMarketRoutes(
             }
             const dependencyTargets: string[] = []
             const resolvedDependencies: string[] = []
+            const installedDependencies: Array<{ entry: (typeof installOrder)[number]; alias: string }> = []
             for (const dependency of installOrder.slice(0, -1)) {
-              if (findInstalledAlias(dependency, installedNow) !== null) continue
+              const installedAlias = findInstalledAlias(dependency, installedNow)
+              if (installedAlias !== null) {
+                if (!hasLoadableEntry(activeProfileDir, installedAlias)) {
+                  sendJson(response, 409, {
+                    error: `无法安装 ${entry.name}：已登记的依赖 ${installedAlias} 缺少可加载入口。请先修复或重新安装该依赖。 / Cannot install ${entry.name}: installed dependency ${installedAlias} has no loadable entry. Repair or reinstall that dependency first.`,
+                    dependencyInvalid: true,
+                    dependency: installedAlias,
+                  })
+                  return
+                }
+                installedDependencies.push({ entry: dependency, alias: installedAlias })
+                continue
+              }
               const clashName = [dependency.npm, dependency.name].find(
                 (name): name is string => typeof name === 'string' && name !== '' && installedNow[name] !== undefined,
               )
@@ -3351,6 +3382,27 @@ export function mountMarketRoutes(
               }
               dependencyTargets.push(await acceleratedTarget(dependencyTarget, region))
               resolvedDependencies.push(dependency.name)
+            }
+            for (const dependency of installedDependencies) {
+              const current = verifyActivation(
+                config.profile,
+                dependency.alias,
+                liveNames(),
+                activeProfileDir,
+                disabled.has(dependency.alias),
+              )
+              if (current.state === 'live' && !disabled.has(dependency.alias)) continue
+              const activated = pluginCategories(dependency.entry).includes('theme')
+                ? await themes.activateTheme(dependency.alias)
+                : (await setPluginEnabled(dependency.alias, true)).ok
+              if (!activated) {
+                sendJson(response, 409, {
+                  error: `无法安装 ${entry.name}：依赖 ${dependency.alias} 已安装但无法激活。 / Cannot install ${entry.name}: dependency ${dependency.alias} is installed but could not be activated.`,
+                  dependencyActivationFailed: true,
+                  dependency: dependency.alias,
+                })
+                return
+              }
             }
             const beforeSpecs = readInstalled(config.profile, activeProfileDir)
             const before = new Set(Object.keys(beforeSpecs))

@@ -3349,7 +3349,7 @@ export function mountMarketRoutes(
             }
             const dependencyTargets: string[] = []
             const resolvedDependencies: string[] = []
-            const installedDependencies: Array<{ entry: (typeof installOrder)[number]; alias: string }> = []
+            const installedDependencies: string[] = []
             for (const dependency of installOrder.slice(0, -1)) {
               const installedAlias = findInstalledAlias(dependency, installedNow)
               if (installedAlias !== null) {
@@ -3361,7 +3361,30 @@ export function mountMarketRoutes(
                   })
                   return
                 }
-                installedDependencies.push({ entry: dependency, alias: installedAlias })
+                const current = verifyActivation(
+                  config.profile,
+                  installedAlias,
+                  liveNames(),
+                  activeProfileDir,
+                  disabled.has(installedAlias),
+                )
+                if (current.state !== 'live' && !disabled.has(installedAlias)) {
+                  sendJson(response, 409, {
+                    error: `无法安装 ${entry.name}：依赖 ${installedAlias} 已安装但当前未运行，且无法安全地自动恢复其运行态。 / Cannot install ${entry.name}: dependency ${installedAlias} is installed but not running, and its runtime state cannot be restored safely automatically.`,
+                    dependencyActivationFailed: true,
+                    dependency: installedAlias,
+                  })
+                  return
+                }
+                if (current.state !== 'live' && pluginCategories(dependency).includes('theme')) {
+                  sendJson(response, 409, {
+                    error: `无法安装 ${entry.name}：主题依赖 ${installedAlias} 当前未运行，自动激活会改变其他主题状态。请先手动启用它。 / Cannot install ${entry.name}: theme dependency ${installedAlias} is not running, and automatic activation would change other theme state. Enable it manually first.`,
+                    dependencyActivationFailed: true,
+                    dependency: installedAlias,
+                  })
+                  return
+                }
+                installedDependencies.push(installedAlias)
                 continue
               }
               const clashName = [dependency.npm, dependency.name].find(
@@ -3382,27 +3405,6 @@ export function mountMarketRoutes(
               }
               dependencyTargets.push(await acceleratedTarget(dependencyTarget, region))
               resolvedDependencies.push(dependency.name)
-            }
-            for (const dependency of installedDependencies) {
-              const current = verifyActivation(
-                config.profile,
-                dependency.alias,
-                liveNames(),
-                activeProfileDir,
-                disabled.has(dependency.alias),
-              )
-              if (current.state === 'live' && !disabled.has(dependency.alias)) continue
-              const activated = pluginCategories(dependency.entry).includes('theme')
-                ? await themes.activateTheme(dependency.alias)
-                : (await setPluginEnabled(dependency.alias, true)).ok
-              if (!activated) {
-                sendJson(response, 409, {
-                  error: `无法安装 ${entry.name}：依赖 ${dependency.alias} 已安装但无法激活。 / Cannot install ${entry.name}: dependency ${dependency.alias} is installed but could not be activated.`,
-                  dependencyActivationFailed: true,
-                  dependency: dependency.alias,
-                })
-                return
-              }
             }
             const beforeSpecs = readInstalled(config.profile, activeProfileDir)
             const before = new Set(Object.keys(beforeSpecs))
@@ -3472,9 +3474,53 @@ export function mountMarketRoutes(
             let activation: Record<string, ReturnType<typeof verifyActivation>> | undefined
             let compatibility: { code: 'soft-incompatible'; risks: CompatibilityRisk[]; shadowedNames?: DuplicateName[]; brokenBundles?: Array<{ name: string; reason: string }>; rollbackId: string } | undefined
             let addedPackages: string[] = []
+            let rollbackPackages: string[] = []
             if (ok) {
               const added = Object.keys(installed).filter(name => !before.has(name))
               addedPackages = added
+              const orderedAliases = installOrder
+                .map(plugin => findInstalledAlias(plugin, installed))
+                .filter((name): name is string => name !== null && added.includes(name))
+              rollbackPackages = [...new Set([
+                ...orderedAliases,
+                ...added.filter(name => !orderedAliases.includes(name)),
+              ])]
+              const activatedDependencies: string[] = []
+              for (const dependency of installedDependencies) {
+                const current = verifyActivation(
+                  config.profile,
+                  dependency,
+                  liveNames(),
+                  activeProfileDir,
+                  disabled.has(dependency),
+                )
+                if (current.state === 'live' && !disabled.has(dependency)) continue
+                const enabled = await setPluginEnabled(dependency, true)
+                if (enabled.ok) {
+                  activatedDependencies.push(dependency)
+                  continue
+                }
+                const restorationFailures: string[] = []
+                for (const name of [...activatedDependencies, dependency].reverse()) {
+                  const restored = await setPluginEnabled(name, false)
+                  if (!restored.ok) restorationFailures.push(`${name}: ${restored.reason ?? 'activation state restore failed'}`)
+                }
+                const removalFailures: string[] = []
+                for (const name of [...rollbackPackages].reverse()) {
+                  const removed = await removeInstalledPackage(name)
+                  if (!removed.ok) removalFailures.push(`${name}: ${removed.detail ?? 'remove failed'}`)
+                }
+                invalidateUpdates()
+                const rollbackFailures = [...restorationFailures, ...removalFailures]
+                logEvent('error', 'install-dependency', `${dependency}: activation failed${rollbackFailures.length === 0 ? '; transaction rolled back' : `; rollback failures: ${rollbackFailures.join('; ')}`}`)
+                sendJson(response, 409, {
+                  error: `无法安装 ${entry.name}：依赖 ${dependency} 已安装但无法激活。 / Cannot install ${entry.name}: dependency ${dependency} is installed but could not be activated.`,
+                  dependencyActivationFailed: true,
+                  dependency,
+                  rollbackFailures: rollbackFailures.length > 0 ? rollbackFailures : undefined,
+                })
+                return
+              }
               if (added.length > 0) {
                 // Fresh installs start enabled: drop any stale disable flag
                 // (e.g. reinstall after an uninstall while this process kept
@@ -3524,7 +3570,7 @@ export function mountMarketRoutes(
                   risks,
                   shadowedNames: shadowed.length > 0 ? shadowed : undefined,
                   brokenBundles: brokenBundles.length > 0 ? brokenBundles : undefined,
-                  rollbackId: savePendingRollback({ kind: 'install', names: addedPackages }),
+                  rollbackId: savePendingRollback({ kind: 'install', names: rollbackPackages }),
                 }
                 if (brokenBundles.length > 0) {
                   logEvent('error', 'install-bundle', `${brokenBundles.map(entry => `${entry.name}: ${entry.reason}`).join('; ')}`)

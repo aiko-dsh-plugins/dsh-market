@@ -61,6 +61,8 @@ const fake = vi.hoisted(() => ({
   failNextRemoveOnce: '',
   /** Fail one named remove without touching the profile. */
   failRemoveTargetOnce: null as { target: string; stderr: string } | null,
+  /** Model pnpm's alphabetized package.json dependency writes. */
+  sortDependenciesAfterMultiAdd: false,
   /** Appended to the next add's stdout (e.g. pnpm's Ignored build scripts line). */
   buildScriptOutputOnce: '',
 /** Fail the next add with exit 1 and this stderr (e.g. ERR_PNPM_IGNORED_BUILDS, #68/#69). */
@@ -192,6 +194,13 @@ vi.mock('../src/dsh-cli.ts', () => {
       for (const target of positional.slice(1)) {
         const result = await execute(['add', target]) as { exitCode: number | null; timedOut: boolean }
         if (result.exitCode !== 0 || result.timedOut) return result
+      }
+      if (fake.sortDependenciesAfterMultiAdd) {
+        const manifest = readManifest()
+        manifest.dependencies = Object.fromEntries(
+          Object.entries(manifest.dependencies ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+        )
+        writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
       }
       return ok
     }
@@ -503,6 +512,7 @@ beforeEach(() => {
   fake.buildScriptOutputOnce = ''
   fake.failNextAddStderrOnce = ''
   fake.failRemoveTargetOnce = null
+  fake.sortDependenciesAfterMultiAdd = false
   fake.failAfterWriteStderrOnce = ''
   fake.preserveManifestOnNextAdd = false
   fake.failAddTargetOnce = null
@@ -2184,6 +2194,62 @@ describe('uninstall flow', () => {
     expect(hot.mounts).toContain('disabled-kernel')
   })
 
+  it('audit #433 follow-up: a failed dependent install preserves the dependency disabled state', async () => {
+    const kernel = { name: 'disabled-kernel', owner: 'audit', url: 'https://github.com/audit/disabled-kernel', category: 'tool', npm: 'disabled-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'failing-scene', owner: 'audit', url: 'https://github.com/audit/failing-scene', category: 'tool', npm: 'failing-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    fake.npm['failing-scene'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    manifest.dependencies['disabled-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const kernelDir = join(fake.profileDir, 'node_modules', 'disabled-kernel')
+    mkdirSync(kernelDir, { recursive: true })
+    writeFileSync(join(kernelDir, 'package.json'), JSON.stringify({
+      name: 'disabled-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(kernelDir, 'index.js'), '')
+    hot.disabled.add('disabled-kernel')
+    fake.failNextAddStderrOnce = 'EIO: simulated target install failure'
+
+    const result = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+
+    expect(result.status).toBe(502)
+    expect(hot.disabled.has('disabled-kernel')).toBe(true)
+    expect(hot.mounts).not.toContain('disabled-kernel')
+  })
+
+  it('audit #433 follow-up: failed dependency activation restores state and removes the dependent', async () => {
+    const kernel = { name: 'activation-kernel', owner: 'audit', url: 'https://github.com/audit/activation-kernel', category: 'tool', npm: 'activation-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'activation-scene', owner: 'audit', url: 'https://github.com/audit/activation-scene', category: 'tool', npm: 'activation-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    fake.npm['activation-scene'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    manifest.dependencies['activation-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const kernelDir = join(fake.profileDir, 'node_modules', 'activation-kernel')
+    mkdirSync(kernelDir, { recursive: true })
+    writeFileSync(join(kernelDir, 'package.json'), JSON.stringify({
+      name: 'activation-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(kernelDir, 'index.js'), '')
+    hot.disabled.add('activation-kernel')
+    hot.failNext = true
+
+    const result = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+
+    expect(result.status).toBe(409)
+    expect(result.json).toMatchObject({ dependencyActivationFailed: true, dependency: 'activation-kernel' })
+    expect(hot.disabled.has('activation-kernel')).toBe(true)
+    expect(hot.mounts).not.toContain('activation-kernel')
+    expect(installedSpec('activation-scene')).toBeUndefined()
+  })
+
   it('audit #433: failed dependency-chain rollback does not strand a dependent without its dependency', async () => {
     const kernel = { name: 'rollback-kernel', owner: 'audit', url: 'https://github.com/audit/kernel', category: 'tool', npm: 'rollback-kernel', description: {}, install: '', added: '' }
     const scene = { name: 'rollback-scene', owner: 'audit', url: 'https://github.com/audit/scene', category: 'tool', npm: 'rollback-scene', description: {}, install: '', added: '', requires: [kernel.url] }
@@ -2204,6 +2270,29 @@ describe('uninstall flow', () => {
     expect(rollback.status).toBe(502)
     expect(installedSpec('rollback-scene')).toBeDefined()
     expect(installedSpec('rollback-kernel')).toBeDefined()
+  })
+
+  it('audit #433 follow-up: rollback order does not depend on alphabetized manifest keys', async () => {
+    const kernel = { name: 'z-rollback-kernel', owner: 'audit', url: 'https://github.com/audit/z-kernel', category: 'tool', npm: 'z-rollback-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'a-rollback-scene', owner: 'audit', url: 'https://github.com/audit/a-scene', category: 'tool', npm: 'a-rollback-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    fake.npm['z-rollback-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
+    fake.npm['a-rollback-scene'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js', peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' } }, artifacts: ['index.js'] } } }
+    const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
+    mkdirSync(hostPeerDir, { recursive: true })
+    writeFileSync(join(hostPeerDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-settings', version: '0.1.0-rc.6' }))
+    fake.sortDependenciesAfterMultiAdd = true
+
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+    expect(installed.status).toBe(200)
+    expect(installed.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
+    fake.failRemoveTargetOnce = { target: 'a-rollback-scene', stderr: 'EPERM: simulated dependent removal failure' }
+
+    const rollback = await bed.dispatch('POST', '/dsh-market/rollback', { rollbackId: installed.json.compatibility.rollbackId })
+
+    expect(rollback.status).toBe(502)
+    expect(installedSpec('a-rollback-scene')).toBeDefined()
+    expect(installedSpec('z-rollback-kernel')).toBeDefined()
   })
 
   it('audit #433: allows uninstall when the only peer dependent marks the peer optional', async () => {

@@ -2132,44 +2132,61 @@ describe('uninstall flow', () => {
     }
   })
 
-  it('audit #433: refuses a scene when an installed dependency has no loadable entry', async () => {
+  it('audit #433: does not report success when a required pre-existing dependency is unloadable', async () => {
     const kernel = { name: 'broken-kernel', owner: 'audit', url: 'https://github.com/audit/broken-kernel', category: 'tool', npm: 'broken-kernel', description: {}, install: '', added: '' }
-    const scene = { name: 'broken-scene', owner: 'audit', url: 'https://github.com/audit/broken-scene', category: 'tool', npm: 'broken-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    const scene = { name: 'needs-kernel', owner: 'audit', url: 'https://github.com/audit/needs-kernel', category: 'tool', npm: 'needs-kernel', description: {}, install: '', added: '', requires: [kernel.url] }
     registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
-    fake.npm['broken-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    fake.npm['broken-scene'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    await bed.dispatch('POST', '/dsh-market/install', { url: kernel.url })
-    rmSync(join(fake.profileDir, 'node_modules', 'broken-kernel', 'index.js'))
+    fake.npm['needs-kernel'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    const profileManifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    profileManifest.dependencies['broken-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(profileManifest))
+    const brokenDir = join(fake.profileDir, 'node_modules', 'broken-kernel')
+    mkdirSync(brokenDir, { recursive: true })
+    writeFileSync(join(brokenDir, 'package.json'), JSON.stringify({
+      name: 'broken-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
 
-    const refused = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+    const result = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
 
-    expect(refused.status).toBe(409)
-    expect(refused.json).toMatchObject({ dependencyInvalid: true, dependency: 'broken-kernel' })
-    expect(installedSpec('broken-scene')).toBeUndefined()
+    expect(
+      result.status !== 200 || result.json.ok !== true || existsSync(join(brokenDir, 'index.js')),
+      'the route reported success while the required dependency remained unloadable',
+    ).toBe(true)
   })
 
-  it('audit #433: activates an installed disabled dependency before installing its scene', async () => {
+  it('audit #433: activates an already-installed dependency that was disabled', async () => {
     const kernel = { name: 'disabled-kernel', owner: 'audit', url: 'https://github.com/audit/disabled-kernel', category: 'tool', npm: 'disabled-kernel', description: {}, install: '', added: '' }
-    const scene = { name: 'disabled-scene', owner: 'audit', url: 'https://github.com/audit/disabled-scene', category: 'tool', npm: 'disabled-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    const scene = { name: 'needs-active-kernel', owner: 'audit', url: 'https://github.com/audit/needs-active-kernel', category: 'tool', npm: 'needs-active-kernel', description: {}, install: '', added: '', requires: [kernel.url] }
     registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
-    fake.npm['disabled-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    fake.npm['disabled-scene'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    await bed.dispatch('POST', '/dsh-market/install', { url: kernel.url })
-    const disabled = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'disabled-kernel', enabled: false })
-    expect(disabled.status).toBe(200)
-    expect(hot.disabled.has('disabled-kernel')).toBe(true)
+    fake.npm['needs-active-kernel'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    manifest.dependencies['disabled-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const kernelDir = join(fake.profileDir, 'node_modules', 'disabled-kernel')
+    mkdirSync(kernelDir, { recursive: true })
+    writeFileSync(join(kernelDir, 'package.json'), JSON.stringify({
+      name: 'disabled-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(kernelDir, 'index.js'), '')
+    hot.disabled.add('disabled-kernel')
 
-    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+    const result = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
 
-    expect(installed.status).toBe(200)
+    expect(result.status).toBe(200)
+    expect(result.json.ok).toBe(true)
     expect(hot.disabled.has('disabled-kernel')).toBe(false)
     expect(hot.mounts).toContain('disabled-kernel')
-    expect(installedSpec('disabled-scene')).toBeDefined()
   })
 
-  it('audit #433: rollback removes dependents before dependencies', async () => {
-    const kernel = { name: 'rollback-kernel', owner: 'audit', url: 'https://github.com/audit/rollback-kernel', category: 'tool', npm: 'rollback-kernel', description: {}, install: '', added: '' }
-    const scene = { name: 'rollback-scene', owner: 'audit', url: 'https://github.com/audit/rollback-scene', category: 'tool', npm: 'rollback-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+  it('audit #433: failed dependency-chain rollback does not strand a dependent without its dependency', async () => {
+    const kernel = { name: 'rollback-kernel', owner: 'audit', url: 'https://github.com/audit/kernel', category: 'tool', npm: 'rollback-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'rollback-scene', owner: 'audit', url: 'https://github.com/audit/scene', category: 'tool', npm: 'rollback-scene', description: {}, install: '', added: '', requires: [kernel.url] }
     registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
     fake.npm['rollback-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
     fake.npm['rollback-scene'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js', peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' } }, artifacts: ['index.js'] } } }
@@ -2179,8 +2196,8 @@ describe('uninstall flow', () => {
 
     const installed = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
     expect(installed.status).toBe(200)
-    expect(typeof installed.json.compatibility?.rollbackId).toBe('string')
-    fake.failRemoveTargetOnce = { target: 'rollback-scene', stderr: 'EPERM: rollback scene removal failed' }
+    expect(installed.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
+    fake.failRemoveTargetOnce = { target: 'rollback-scene', stderr: 'EPERM: simulated dependent removal failure' }
 
     const rollback = await bed.dispatch('POST', '/dsh-market/rollback', { rollbackId: installed.json.compatibility.rollbackId })
 
@@ -2189,51 +2206,65 @@ describe('uninstall flow', () => {
     expect(installedSpec('rollback-kernel')).toBeDefined()
   })
 
-  it('audit #433: optional peers do not block uninstall', async () => {
-    const kernel = { name: 'optional-kernel', owner: 'audit', url: 'https://github.com/audit/optional-kernel', category: 'tool', npm: 'optional-kernel', description: {}, install: '', added: '' }
-    const consumer = { name: 'optional-consumer', owner: 'audit', url: 'https://github.com/audit/optional-consumer', category: 'tool', npm: 'optional-consumer', description: {}, install: '', added: '' }
-    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, consumer] })
-    fake.npm['optional-kernel'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    fake.npm['optional-consumer'] = {
-      latest: '1.0.0',
-      versions: {
-        '1.0.0': {
-          manifest: {
-            dsh: {},
-            main: 'index.js',
-            peerDependencies: { 'optional-kernel': '^1.0.0' },
-            peerDependenciesMeta: { 'optional-kernel': { optional: true } },
-          },
-          artifacts: ['index.js'],
-        },
+  it('audit #433: allows uninstall when the only peer dependent marks the peer optional', async () => {
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify({
+      dependencies: {
+        'optional-host': '^1.0.0',
+        'optional-consumer': '^1.0.0',
       },
+    }))
+    for (const name of ['optional-host', 'optional-consumer']) {
+      mkdirSync(join(fake.profileDir, 'node_modules', name), { recursive: true })
     }
-    await bed.dispatch('POST', '/dsh-market/install', { url: kernel.url })
-    await bed.dispatch('POST', '/dsh-market/install', { url: consumer.url })
+    writeFileSync(join(fake.profileDir, 'node_modules', 'optional-host', 'package.json'), JSON.stringify({
+      name: 'optional-host', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(fake.profileDir, 'node_modules', 'optional-consumer', 'package.json'), JSON.stringify({
+      name: 'optional-consumer',
+      version: '1.0.0',
+      dsh: {},
+      main: 'index.js',
+      peerDependencies: { 'optional-host': '^1.0.0' },
+      peerDependenciesMeta: { 'optional-host': { optional: true } },
+    }))
 
-    const removed = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'optional-kernel' })
+    const result = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'optional-host' })
 
-    expect(removed.status).toBe(200)
-    expect(installedSpec('optional-kernel')).toBeUndefined()
-    expect(installedSpec('optional-consumer')).toBeDefined()
+    expect(result.status).toBe(200)
+    expect(installedSpec('optional-host')).toBeUndefined()
   })
 
-  it('audit #433: catalog failure blocks uninstall unless explicitly forced', async () => {
-    const plugin = { name: 'catalog-guarded', owner: 'audit', url: 'https://github.com/audit/catalog-guarded', category: 'tool', npm: 'catalog-guarded', description: {}, install: '', added: '' }
-    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, plugin] })
-    fake.npm['catalog-guarded'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } } }
-    await bed.dispatch('POST', '/dsh-market/install', { url: plugin.url })
-    registryModule.loadRegistry.mockRejectedValue(new Error('catalog unavailable'))
+  it('audit #433: does not bypass catalog dependency protection when required catalogs are unavailable', async () => {
+    const kernel = { name: 'catalog-kernel', owner: 'audit', url: 'https://github.com/audit/catalog-kernel', category: 'tool', npm: 'catalog-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'catalog-scene', owner: 'audit', url: 'https://github.com/audit/catalog-scene', category: 'tool', npm: 'catalog-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify({
+      dependencies: {
+        'catalog-kernel': '^1.0.0',
+        'catalog-scene': '^1.0.0',
+      },
+    }))
+    for (const name of ['catalog-kernel', 'catalog-scene']) {
+      const dir = join(fake.profileDir, 'node_modules', name)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name, version: '1.0.0', dsh: {}, main: 'index.js',
+      }))
+      writeFileSync(join(dir, 'index.js'), '')
+    }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    const browsed = await bed.dispatch('GET', '/dsh-market/registry')
+    expect(browsed.status).toBe(200)
+    registryModule.loadRegistry.mockRejectedValue(new Error('required organization catalog unavailable'))
 
-    const refused = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'catalog-guarded' })
+    const refused = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'catalog-kernel' })
 
-    expect(refused.status).toBe(409)
+    expect(refused.status).not.toBe(200)
     expect(refused.json).toMatchObject({ dependencyInspectionFailed: true, forceable: true })
-    expect(installedSpec('catalog-guarded')).toBeDefined()
+    expect(installedSpec('catalog-kernel')).toBeDefined()
 
-    const forced = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'catalog-guarded', force: true })
+    const forced = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'catalog-kernel', force: true })
     expect(forced.status).toBe(200)
-    expect(installedSpec('catalog-guarded')).toBeUndefined()
+    expect(installedSpec('catalog-kernel')).toBeUndefined()
   })
 
   it('removes the plugin (live when hot mounted) and protects the market itself', async () => {

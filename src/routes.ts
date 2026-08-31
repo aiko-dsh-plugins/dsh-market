@@ -559,6 +559,8 @@ export function mountMarketRoutes(
     id: string
     kind: 'update' | 'install'
     names: string[]
+    /** Pre-existing plugins enabled by an install and disabled again after its rollback. */
+    restoreDisabled?: string[]
     manifestBefore?: ProfileManifestSnapshot
     /** github: updates must re-add the pre-update commit, not just reinstall. */
     gitTarget?: string
@@ -3203,6 +3205,16 @@ export function mountMarketRoutes(
                   break
                 }
               }
+              if (ok) {
+                for (const name of [...(pending.restoreDisabled ?? [])].reverse()) {
+                  const result = await setPluginEnabled(name, false)
+                  if (!result.ok) {
+                    ok = false
+                    detail = result.reason ?? `failed to restore ${name} to disabled state`
+                    break
+                  }
+                }
+              }
             }
             if (ok) {
               pendingRollbacks.delete(id)
@@ -3475,6 +3487,7 @@ export function mountMarketRoutes(
             let compatibility: { code: 'soft-incompatible'; risks: CompatibilityRisk[]; shadowedNames?: DuplicateName[]; brokenBundles?: Array<{ name: string; reason: string }>; rollbackId: string } | undefined
             let addedPackages: string[] = []
             let rollbackPackages: string[] = []
+            const activatedDependencies: string[] = []
             if (ok) {
               const added = Object.keys(installed).filter(name => !before.has(name))
               addedPackages = added
@@ -3485,7 +3498,6 @@ export function mountMarketRoutes(
                 ...orderedAliases,
                 ...added.filter(name => !orderedAliases.includes(name)),
               ])]
-              const activatedDependencies: string[] = []
               for (const dependency of installedDependencies) {
                 const current = verifyActivation(
                   config.profile,
@@ -3508,7 +3520,10 @@ export function mountMarketRoutes(
                 const removalFailures: string[] = []
                 for (const name of [...rollbackPackages].reverse()) {
                   const removed = await removeInstalledPackage(name)
-                  if (!removed.ok) removalFailures.push(`${name}: ${removed.detail ?? 'remove failed'}`)
+                  if (!removed.ok) {
+                    removalFailures.push(`${name}: ${removed.detail ?? 'remove failed'}`)
+                    break
+                  }
                 }
                 invalidateUpdates()
                 const rollbackFailures = [...restorationFailures, ...removalFailures]
@@ -3570,7 +3585,11 @@ export function mountMarketRoutes(
                   risks,
                   shadowedNames: shadowed.length > 0 ? shadowed : undefined,
                   brokenBundles: brokenBundles.length > 0 ? brokenBundles : undefined,
-                  rollbackId: savePendingRollback({ kind: 'install', names: rollbackPackages }),
+                  rollbackId: savePendingRollback({
+                    kind: 'install',
+                    names: rollbackPackages,
+                    restoreDisabled: activatedDependencies,
+                  }),
                 }
                 if (brokenBundles.length > 0) {
                   logEvent('error', 'install-bundle', `${brokenBundles.map(entry => `${entry.name}: ${entry.reason}`).join('; ')}`)

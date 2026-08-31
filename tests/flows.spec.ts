@@ -2221,6 +2221,42 @@ describe('uninstall flow', () => {
     expect(hot.mounts).not.toContain('disabled-kernel')
   })
 
+  it('audit #433 follow-up private: rolling back the dependent restores a pre-existing dependency disabled state', async () => {
+    const kernel = { name: 'rollback-disabled-kernel', owner: 'audit', url: 'https://github.com/audit/rollback-disabled-kernel', category: 'tool', npm: 'rollback-disabled-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'rollback-disabled-scene', owner: 'audit', url: 'https://github.com/audit/rollback-disabled-scene', category: 'tool', npm: 'rollback-disabled-scene', description: {}, install: '', added: '', requires: [kernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, kernel, scene] })
+    fake.npm['rollback-disabled-scene'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js', peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' } }, artifacts: ['index.js'] } },
+    }
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    manifest.dependencies['rollback-disabled-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const kernelDir = join(fake.profileDir, 'node_modules', 'rollback-disabled-kernel')
+    mkdirSync(kernelDir, { recursive: true })
+    writeFileSync(join(kernelDir, 'package.json'), JSON.stringify({
+      name: 'rollback-disabled-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(kernelDir, 'index.js'), '')
+    hot.disabled.add('rollback-disabled-kernel')
+    const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
+    mkdirSync(hostPeerDir, { recursive: true })
+    writeFileSync(join(hostPeerDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-settings', version: '0.1.0-rc.6' }))
+
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+    expect(installed.status).toBe(200)
+    expect(installed.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
+    expect(hot.disabled.has('rollback-disabled-kernel')).toBe(false)
+    expect(hot.mounts).toContain('rollback-disabled-kernel')
+
+    const rollback = await bed.dispatch('POST', '/dsh-market/rollback', { rollbackId: installed.json.compatibility.rollbackId })
+
+    expect(rollback.status).toBe(200)
+    expect(installedSpec('rollback-disabled-scene')).toBeUndefined()
+    expect(hot.disabled.has('rollback-disabled-kernel')).toBe(true)
+    expect(hot.mounts).not.toContain('rollback-disabled-kernel')
+  })
+
   it('audit #433 follow-up: failed dependency activation restores state and removes the dependent', async () => {
     const kernel = { name: 'activation-kernel', owner: 'audit', url: 'https://github.com/audit/activation-kernel', category: 'tool', npm: 'activation-kernel', description: {}, install: '', added: '' }
     const scene = { name: 'activation-scene', owner: 'audit', url: 'https://github.com/audit/activation-scene', category: 'tool', npm: 'activation-scene', description: {}, install: '', added: '', requires: [kernel.url] }
@@ -2248,6 +2284,40 @@ describe('uninstall flow', () => {
     expect(hot.disabled.has('activation-kernel')).toBe(true)
     expect(hot.mounts).not.toContain('activation-kernel')
     expect(installedSpec('activation-scene')).toBeUndefined()
+  })
+
+  it('audit #433 follow-up private: activation rollback does not remove a new dependency after dependent removal fails', async () => {
+    const newKernel = { name: 'activation-new-kernel', owner: 'audit', url: 'https://github.com/audit/activation-new-kernel', category: 'tool', npm: 'activation-new-kernel', description: {}, install: '', added: '' }
+    const disabledKernel = { name: 'activation-disabled-kernel', owner: 'audit', url: 'https://github.com/audit/activation-disabled-kernel', category: 'tool', npm: 'activation-disabled-kernel', description: {}, install: '', added: '' }
+    const scene = { name: 'activation-rollback-scene', owner: 'audit', url: 'https://github.com/audit/activation-rollback-scene', category: 'tool', npm: 'activation-rollback-scene', description: {}, install: '', added: '', requires: [newKernel.url, disabledKernel.url] }
+    registryModule.loadRegistry.mockResolvedValue({ ...REGISTRY, plugins: [...REGISTRY.plugins, newKernel, disabledKernel, scene] })
+    fake.npm['activation-new-kernel'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    fake.npm['activation-rollback-scene'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'index.js' }, artifacts: ['index.js'] } },
+    }
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8'))
+    manifest.dependencies['activation-disabled-kernel'] = '^1.0.0'
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const disabledDir = join(fake.profileDir, 'node_modules', 'activation-disabled-kernel')
+    mkdirSync(disabledDir, { recursive: true })
+    writeFileSync(join(disabledDir, 'package.json'), JSON.stringify({
+      name: 'activation-disabled-kernel', version: '1.0.0', dsh: {}, main: 'index.js',
+    }))
+    writeFileSync(join(disabledDir, 'index.js'), '')
+    hot.disabled.add('activation-disabled-kernel')
+    hot.failNext = true
+    fake.failRemoveTargetOnce = { target: 'activation-rollback-scene', stderr: 'EPERM: simulated dependent removal failure' }
+
+    const result = await bed.dispatch('POST', '/dsh-market/install', { url: scene.url })
+
+    expect(result.status).toBe(409)
+    expect(result.json).toMatchObject({ dependencyActivationFailed: true, dependency: 'activation-disabled-kernel' })
+    expect(installedSpec('activation-rollback-scene')).toBeDefined()
+    expect(installedSpec('activation-new-kernel')).toBeDefined()
   })
 
   it('audit #433: failed dependency-chain rollback does not strand a dependent without its dependency', async () => {
